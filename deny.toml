@@ -1,0 +1,71 @@
+# =============================================================================
+# cargo-deny configuration for MegaNum
+# Reference: https://embarkstudios.github.io/cargo-deny/
+# Schema target: cargo-deny 0.21.0 — the version pinned in ci.yml and
+# nightly.yml (`tool: cargo-deny@0.21.0`). Bump the pin and this file
+# together.
+#
+# cargo-deny >= 0.19 removed the classic per-class severity fields, so the
+# spec's supply-chain policy maps onto the current schema as follows:
+#   * Vulnerabilities : hard errors — cargo-deny >= 0.19 errors on every
+#     vulnerability advisory unconditionally (the old `vulnerability = "deny"`
+#     field was removed). Strictly stronger than the classic config, never
+#     weaker; per-advisory exceptions go through `ignore` with a reason.
+#   * Unmaintained    : the new schema only offers error scopes
+#     (all/workspace/transitive/none), no warn level. `none` keeps the check
+#     non-blocking per spec ("surfaced but not blocking"); unmaintained
+#     crates are instead surfaced as warnings by the `cargo audit` step that
+#     runs in the same job (cargo-audit warns on unmaintained without
+#     failing it).
+#   * Yanked          : `warn` still exists and keeps the old behavior
+#     (surfaced, not blocking).
+# =============================================================================
+
+[advisories]
+unmaintained = "none"  # surfaced via cargo-audit warnings, never blocking (spec)
+yanked = "warn"        # yanked releases are surfaced but not blocking
+
+[licenses]
+# Spec baseline: MIT / Apache-2.0 / BSD / ISC / Zlib.
+# Additional entries and why:
+#   - Unicode-3.0         : unicode-ident is "(MIT OR Apache-2.0) AND Unicode-3.0"
+#                           (the copied Unicode data files), so the dep tree
+#                           pulls Unicode-3.0 in.
+#   - CC0-1.0             : small data/test fixtures in parts of the dep tree.
+#   - CDLA-Permissive-2.0 : webpki-roots-class dep trees ship root certificate
+#                           data under the CDLA-Permissive-2.0 license.
+#   - MPL-2.0             : policy says warn-not-deny; the simplest compliant
+#                           way to keep MPL-2.0 code visible-but-allowed is to
+#                           include it in `allow` (it still appears in every
+#                           `cargo deny` report for review).
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+]
+
+[bans]
+multiple-versions = "warn"
+# Project policy: MegaNum implements its own bignum arithmetic. External bignum
+# crates are BANNED — neither a direct nor a transitive dependency may pull
+# these in (fails `cargo deny check bans`):
+deny = [
+  "num-bigint",
+  "rug",
+  "gmp-mpfr-sys",
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = [
+  "https://github.com/rust-lang/crates.io-index",
+]

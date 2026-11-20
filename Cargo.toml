@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/meganum-core", "crates/meganum-python"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+# Floor set by PyO3 0.30 (ADR-0001). The dev tree needs more (proptest
+# 1.12 -> 1.88); development and CI run the latest stable toolchain per
+# rust-toolchain.toml. The former rustc-1.80 MSRV gate was removed at
+# maintainer request — see ADR-0008.
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/meganum/meganum"
+
+[workspace.dependencies]
+meganum-core = { path = "crates/meganum-core", version = "1.0.0" }
+thiserror = "2.0.21"
+rayon = "1.12.0"
+pyo3 = { version = "0.30", features = ["macros"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1

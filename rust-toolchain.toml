@@ -1,0 +1,5 @@
+# Tracks the latest stable Rust (1.100.0 as of 2026-11-19). The former
+# rustc-1.80 MSRV validation job was removed at maintainer request —
+# see ADR-0008 for the policy and the documented rustc floors.
+[toolchain]
+channel = "stable"

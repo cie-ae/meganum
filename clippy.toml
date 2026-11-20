@@ -1,0 +1,3 @@
+# Workspace rustc floor (PyO3 0.30 requires 1.85; see ADR-0008).
+# Development and CI run the latest stable toolchain.
+msrv = "1.85"

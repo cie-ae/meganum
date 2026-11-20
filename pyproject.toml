@@ -1,0 +1,63 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "meganum"
+requires-python = ">=3.10"
+# Version is single-sourced from crates/meganum-python/Cargo.toml (read by Maturin).
+dynamic = ["version"]
+description = "Fast, exact, portable arbitrary-precision integers and floats - Rust engine with adaptive Sequential/Parallel/SIMD execution."
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "MegaNum Maintainers" }]
+keywords = ["bignum", "bigint", "bigfloat", "arbitrary-precision", "rust", "high-performance", "math"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://meganum.github.io/meganum"
+Repository = "https://github.com/meganum/meganum"
+Changelog = "https://github.com/meganum/meganum/blob/main/CHANGELOG.md"
+Issues = "https://github.com/meganum/meganum/issues"
+
+[tool.maturin]
+manifest-path = "crates/meganum-python/Cargo.toml"
+python-source = "python"
+module-name = "meganum._native"
+# `extension-module` is mandatory here and ONLY here: wheel builds must
+# not link libpython (symbols resolve at import time). Every plain cargo
+# build/test/clippy invocation runs WITHOUT it, so those binaries link
+# libpython normally and cannot hit the macOS undefined-`_Py*` link
+# failure. See ADR-0009.
+features = ["parallel", "simd", "extension-module"]
+include = [
+  { path = "crates/**", format = "sdist" },
+  { path = "Cargo.lock", format = "sdist" },
+  { path = "tests/vectors/manifest.json", format = "sdist" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Keep the repo root importable so `from tests.conftest import ...` resolves
+# (tests/ is a package with __init__.py; this makes it explicit for every
+# invocation directory).
+pythonpath = ["."]
