@@ -1,0 +1,41 @@
+[package]
+name = "meganum-core"
+description = "Pure-Rust arbitrary-precision engine: limb primitives, algorithms, dispatcher, execution backends. Knows nothing about Python."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+rayon = { workspace = true, optional = true }
+
+[features]
+default = []
+# Rayon-backed parallel scheduling for large operands.
+parallel = ["dep:rayon"]
+# Runtime-detected SIMD kernels (AVX2/NEON) with scalar fallback.
+simd = []
+# AVX-512F kernel: the AVX-512 intrinsics stabilized in Rust 1.89; the
+# path stays opt-in so the default build keeps working on slightly older
+# toolchains (see ADR-0002).
+simd-avx512 = ["simd"]
+# One-line trace of every top-level dispatcher decision to stderr.
+dispatch-trace = []
+# Compile the slow, obviously-correct reference implementations (used by
+# differential tests; off in release builds to keep hot code minimal).
+ref-impls = []
+
+[dev-dependencies]
+# Floors kept broad for future flexibility; the committed lock pins the
+# exact versions CI uses (criterion 0.5.1 / proptest 1.12.0). Note the
+# dev tree needs rustc >= 1.88 (proptest 1.12); CI runs latest stable
+# (ADR-0008), so this is only a floor for local contributors.
+proptest = "1"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "core_ops"
+harness = false
+path = "../../benches/core_ops.rs"

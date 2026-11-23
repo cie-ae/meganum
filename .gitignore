@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+*.whl
+.maturin/
+# coverage / profiling artifacts (local runs)
+lcov*.info
+bindings-raw.lcov
+*.profraw
+*.profdata
+cov-venv/
+dist-cov/
+.smoke-venv/
+postverify-venv/
+*.so

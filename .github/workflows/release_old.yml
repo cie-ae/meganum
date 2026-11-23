@@ -1,0 +1,507 @@
+# # =============================================================================
+# # MegaNum release pipeline (tags: v*)
+# #
+# # Order: build-artifacts (+ sdist) -> publish (TestPyPI for rc tags, PyPI
+# # otherwise) -> post-verify (install from the live index) -> deploy-docs, and
+# # finally the GitHub Release.
+# #
+# # * Trusted Publishing (OIDC) only — no tokens anywhere. Requires the GitHub
+# #   environments `pypi` and `testpypi` configured as PyPI "GitHub publishers"
+# #   for this repository.
+# # * Every artifact gets build provenance attestation
+# #   (actions/attest-build-provenance).
+# # * Concurrency is keyed on the tag ref and never cancels in-progress runs.
+# # * All `uses:` are pinned to full 40-char commit SHAs (version noted in a
+# #   comment directly above each pin).
+# # =============================================================================
+
+# name: Release
+
+# on:
+#   push:
+#     tags:
+#       - "v*"
+
+# concurrency:
+#   group: release-${{ github.ref }}
+#   cancel-in-progress: false
+
+# permissions:
+#   contents: read
+
+# env:
+#   CARGO_TERM_COLOR: always
+
+# jobs:
+#   build-artifacts:
+#     name: build wheel (${{ matrix.name }})
+#     runs-on: ${{ matrix.os }}
+#     timeout-minutes: 120
+#     permissions:
+#       contents: read
+#       id-token: write
+#       attestations: write
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         include:
+#           - name: linux-x86_64-manylinux2014
+#             os: ubuntu-latest
+#             target: x86_64-unknown-linux-gnu
+#             manylinux: "2014"
+#             smoke-image: quay.io/pypa/manylinux2014_x86_64
+#           - name: linux-x86_64-manylinux_2_28
+#             os: ubuntu-latest
+#             target: x86_64-unknown-linux-gnu
+#             manylinux: "2_28"
+#             smoke-image: quay.io/pypa/manylinux_2_28_x86_64
+#           - name: linux-x86_64-musllinux_1_2
+#             os: ubuntu-latest
+#             target: x86_64-unknown-linux-musl
+#             manylinux: "musllinux_1_2"
+#             smoke-image: quay.io/pypa/musllinux_1_2_x86_64
+#           - name: linux-aarch64-manylinux2014
+#             os: ubuntu-latest
+#             target: aarch64-unknown-linux-gnu
+#             manylinux: "2014"
+#             qemu: true
+#             smoke-image: quay.io/pypa/manylinux2014_aarch64
+#           - name: linux-aarch64-manylinux_2_28
+#             os: ubuntu-latest
+#             target: aarch64-unknown-linux-gnu
+#             manylinux: "2_28"
+#             qemu: true
+#             smoke-image: quay.io/pypa/manylinux_2_28_aarch64
+#           - name: linux-aarch64-musllinux_1_2
+#             os: ubuntu-latest
+#             target: aarch64-unknown-linux-musl
+#             manylinux: "musllinux_1_2"
+#             qemu: true
+#             smoke-image: quay.io/pypa/musllinux_1_2_aarch64
+#           - name: macos-x86_64
+#             os: macos-13
+#             target: x86_64-apple-darwin
+#           - name: macos-arm64
+#             os: macos-14
+#             target: aarch64-apple-darwin
+#           - name: windows-x86_64
+#             os: windows-latest
+#             target: x86_64-pc-windows-msvc
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Set up QEMU (aarch64 legs)
+#         if: ${{ matrix.qemu }}
+#         # docker/setup-qemu-action v4.4.0
+#         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
+#         with:
+#           platforms: arm64
+
+#       - name: Install Rust (stable)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: stable
+
+#       - name: Rust cache
+#         # Swatinem/rust-cache v2.9.3
+#         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#         with:
+#           key: ${{ matrix.name }}
+
+#       - name: Build wheel (maturin, linux container)
+#         if: ${{ matrix.manylinux }}
+#         # PyO3/maturin-action v1.51.0
+#         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+#         with:
+#           command: build
+#           target: ${{ matrix.target }}
+#           manylinux: ${{ matrix.manylinux }}
+#           args: --release --out dist
+
+#       - name: Build wheel (maturin, native)
+#         if: ${{ !matrix.manylinux }}
+#         # PyO3/maturin-action v1.51.0
+#         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+#         with:
+#           command: build
+#           target: ${{ matrix.target }}
+#           args: --release --out dist
+
+#       # Linux legs: smoke test inside the same docker image the wheel was built
+#       # in (aarch64 legs run under QEMU, registered by setup-qemu-action above).
+#       # pypa images have no usable system python3 (manylinux ships interpreters
+#       # only under /opt/python; musllinux's /usr/bin/python3 has no pip), so
+#       # pick a /opt/python interpreter >= 3.10 — abi3-py310 wheels load on any
+#       # CPython >= 3.10.
+#       - name: Smoke test wheel (inside matching linux container)
+#         if: ${{ matrix.smoke-image }}
+#         run: |
+#           docker run --rm \
+#             ${{ matrix.qemu == true && '--platform linux/arm64' || '' }} \
+#             -v "$(pwd)/dist:/dist:ro" \
+#             -w /dist \
+#             ${{ matrix.smoke-image }} \
+#             bash -c '
+#               set -euo pipefail
+#               PYBIN=""
+#               for d in /opt/python/cp314-cp314 /opt/python/cp313-cp313 \
+#                        /opt/python/cp312-cp312 /opt/python/cp311-cp311 \
+#                        /opt/python/cp310-cp310; do
+#                 if [ -x "$d/bin/python" ]; then PYBIN="$d/bin/python"; break; fi
+#               done
+#               if [ -z "$PYBIN" ]; then
+#                 echo "ERROR: no /opt/python/cp310+ interpreter in this image" >&2
+#                 exit 1
+#               fi
+#               echo "smoke-test interpreter: $PYBIN"
+#               "$PYBIN" -m pip install --no-cache-dir /dist/*.whl
+#               "$PYBIN" -c "import meganum; meganum.smoke()"
+#             '
+
+#       - name: Smoke test wheel (native, fresh venv)
+#         if: ${{ !matrix.smoke-image }}
+#         shell: bash
+#         run: |
+#           if [[ "$RUNNER_OS" == "Windows" ]]; then
+#             PYBIN="python"
+#           else
+#             PYBIN="python3"
+#           fi
+#           "$PYBIN" -m venv .smoke-venv
+#           if [[ "$RUNNER_OS" == "Windows" ]]; then
+#             PY=".smoke-venv/Scripts/python.exe"
+#           else
+#             PY=".smoke-venv/bin/python"
+#           fi
+#           "$PY" -m pip install --upgrade pip
+#           "$PY" -m pip install --no-cache-dir dist/*.whl
+#           "$PY" -c "import meganum; meganum.smoke()"
+
+#       - name: Attest build provenance
+#         # actions/attest-build-provenance v4.2.2
+#         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+#         with:
+#           subject-path: dist/*
+
+#       - name: Upload artifacts
+#         # actions/upload-artifact v7.0.2
+#         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#         with:
+#           name: release-${{ matrix.name }}
+#           path: dist/
+#           if-no-files-found: error
+
+#   # Best-effort Windows aarch64 wheel. The `windows-11-arm` runner label is not
+#   # available to every repository; if this job cannot start, comment it out.
+#   # With job-level continue-on-error a failure here cannot block the release.
+#   build-windows-aarch64:
+#     name: build wheel (windows-aarch64, best-effort)
+#     runs-on: windows-11-arm
+#     timeout-minutes: 120
+#     continue-on-error: true
+#     permissions:
+#       contents: read
+#       id-token: write
+#       attestations: write
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Set up Python (for the smoke-test venv)
+#         # actions/setup-python v7.1.0
+#         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+#         with:
+#           python-version: "3.13"
+
+#       - name: Install Rust (stable)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: stable
+
+#       - name: Rust cache
+#         # Swatinem/rust-cache v2.9.3
+#         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#         with:
+#           key: windows-aarch64
+
+#       - name: Build wheel (maturin, native)
+#         # PyO3/maturin-action v1.51.0
+#         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+#         with:
+#           command: build
+#           target: aarch64-pc-windows-msvc
+#           args: --release --out dist
+
+#       - name: Smoke test wheel (native, fresh venv)
+#         shell: bash
+#         run: |
+#           python -m venv .smoke-venv
+#           PY=".smoke-venv/Scripts/python.exe"
+#           "$PY" -m pip install --upgrade pip
+#           "$PY" -m pip install --no-cache-dir dist/*.whl
+#           "$PY" -c "import meganum; meganum.smoke()"
+
+#       - name: Attest build provenance
+#         # actions/attest-build-provenance v4.2.2
+#         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+#         with:
+#           subject-path: dist/*
+
+#       - name: Upload artifacts
+#         # actions/upload-artifact v7.0.2
+#         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#         with:
+#           name: release-windows-aarch64
+#           path: dist/
+#           if-no-files-found: error
+
+#   sdist:
+#     name: build sdist
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 30
+#     permissions:
+#       contents: read
+#       id-token: write
+#       attestations: write
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Build sdist (maturin)
+#         # PyO3/maturin-action v1.51.0
+#         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+#         with:
+#           command: sdist
+#           args: --out dist
+
+#       - name: Attest build provenance
+#         # actions/attest-build-provenance v4.2.2
+#         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+#         with:
+#           subject-path: dist/*
+
+#       - name: Upload artifacts
+#         # actions/upload-artifact v7.0.2
+#         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#         with:
+#           name: release-sdist
+#           path: dist/
+#           if-no-files-found: error
+
+#   publish-testpypi:
+#     name: publish -> TestPyPI (rc tags)
+#     # rc tags (X.Y.ZrcN) publish to TestPyPI; stable tags publish to PyPI
+#     # (see publish-pypi). Environment `testpypi` holds the TestPyPI
+#     # Trusted-Publishing (OIDC) configuration — no tokens anywhere.
+#     needs:
+#       - build-artifacts
+#       - sdist
+#     if: ${{ !cancelled() && contains(github.ref_name, 'rc') && needs.build-artifacts.result == 'success' && needs.sdist.result == 'success' }}
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 30
+#     environment: testpypi
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - name: Download built artifacts
+#         # actions/download-artifact v8.0.2
+#         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+#         with:
+#           pattern: release-*
+#           merge-multiple: true
+#           path: dist/
+
+#       - name: List artifacts
+#         run: ls -l dist/
+
+#       - name: Publish to TestPyPI
+#         # pypa/gh-action-pypi-publish v1.14.3
+#         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
+#         with:
+#           repository-url: https://test.pypi.org/legacy/
+#           packages-dir: dist/
+#           # TestPyPI is a scratch index: re-running a release after a partial
+#           # publish must not hard-fail on already-uploaded files.
+#           skip-existing: true
+
+#   publish-pypi:
+#     name: publish -> PyPI (stable tags)
+#     needs:
+#       - build-artifacts
+#       - sdist
+#     if: ${{ !cancelled() && !contains(github.ref_name, 'rc') && needs.build-artifacts.result == 'success' && needs.sdist.result == 'success' }}
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 30
+#     environment: pypi
+#     permissions:
+#       contents: read
+#       id-token: write
+#     steps:
+#       - name: Download built artifacts
+#         # actions/download-artifact v8.0.2
+#         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+#         with:
+#           pattern: release-*
+#           merge-multiple: true
+#           path: dist/
+
+#       - name: List artifacts
+#         run: ls -l dist/
+
+#       - name: Publish to PyPI
+#         # pypa/gh-action-pypi-publish v1.14.3
+#         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086
+#         with:
+#           packages-dir: dist/
+
+#   post-verify:
+#     name: post-verify (${{ matrix.os }} / CPython ${{ matrix.python-version }})
+#     # Verifies the release from the LIVE package index (not local artifacts):
+#     # pip installs meganum==<version> into a fresh venv on 3 OS x 3 Python,
+#     # then runs the wheel smoke test. Any failure here fails the release.
+#     needs:
+#       - publish-testpypi
+#       - publish-pypi
+#     if: ${{ !cancelled() && needs.publish-testpypi.result != 'failure' && needs.publish-pypi.result != 'failure' && (needs.publish-testpypi.result == 'success' || needs.publish-pypi.result == 'success') }}
+#     runs-on: ${{ matrix.os }}
+#     timeout-minutes: 40
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-latest, macos-latest, windows-latest]
+#         python-version: ["3.10", "3.12", "3.14"]
+#     steps:
+#       - name: Set up Python ${{ matrix.python-version }}
+#         # actions/setup-python v7.1.0
+#         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+#         with:
+#           python-version: ${{ matrix.python-version }}
+
+#       - name: Install release from live index + smoke test
+#         shell: bash
+#         run: |
+#           MEGANUM_VERSION="${GITHUB_REF_NAME#v}"
+#           echo "verifying meganum==${MEGANUM_VERSION} on ${RUNNER_OS}"
+#           python -m venv .postverify-venv
+#           if [[ "$RUNNER_OS" == "Windows" ]]; then
+#             PY=".postverify-venv/Scripts/python.exe"
+#           else
+#             PY=".postverify-venv/bin/python"
+#           fi
+#           "$PY" -m pip install --upgrade pip
+#           INDEX_ARGS=()
+#           if [[ "$GITHUB_REF_NAME" == *"rc"* ]]; then
+#             INDEX_ARGS=(--index-url "https://test.pypi.org/simple/" --extra-index-url "https://pypi.org/simple/")
+#           fi
+#           "$PY" -m pip install "${INDEX_ARGS[@]}" "meganum==${MEGANUM_VERSION}"
+#           "$PY" -c "import meganum; print(meganum.about()); meganum.smoke()"
+
+#   deploy-docs:
+#     name: deploy docs (GitHub Pages)
+#     needs:
+#       - publish-testpypi
+#       - publish-pypi
+#     if: ${{ !cancelled() && needs.publish-testpypi.result != 'failure' && needs.publish-pypi.result != 'failure' && (needs.publish-testpypi.result == 'success' || needs.publish-pypi.result == 'success') }}
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 30
+#     environment:
+#       name: github-pages
+#       url: ${{ steps.deployment.outputs.page_url }}
+#     permissions:
+#       contents: read
+#       pages: write
+#       id-token: write
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Set up Python
+#         # actions/setup-python v7.1.0
+#         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+#         with:
+#           python-version: "3.12"
+
+#       - name: Install mkdocs toolchain
+#         run: python -m pip install "mkdocs>=1.6" "mkdocs-material>=9.5" "mkdocstrings[python]>=0.26"
+
+#       - name: Configure Pages
+#         # actions/configure-pages v6.0.0
+#         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+
+#       - name: Build docs (mkdocs)
+#         run: mkdocs build
+
+#       - name: Upload Pages artifact
+#         # actions/upload-pages-artifact v5.0.0
+#         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9
+#         with:
+#           path: site
+
+#       - name: Deploy to GitHub Pages
+#         id: deployment
+#         # actions/deploy-pages v5.0.1
+#         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
+
+#   github-release:
+#     name: GitHub Release (notes + artifacts)
+#     needs:
+#       - build-artifacts
+#       - post-verify
+#     if: ${{ !cancelled() && needs.build-artifacts.result == 'success' && needs.post-verify.result == 'success' }}
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 20
+#     permissions:
+#       contents: write
+#     steps:
+#       - name: Check out repository (for CHANGELOG.md at the tag)
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Download built artifacts
+#         # actions/download-artifact v8.0.2
+#         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+#         with:
+#           pattern: release-*
+#           merge-multiple: true
+#           path: dist/
+
+#       - name: Build release notes (commit SHA + CHANGELOG excerpt)
+#         shell: bash
+#         run: |
+#           VERSION="${GITHUB_REF_NAME#v}"
+#           {
+#             echo "Release: ${GITHUB_REF_NAME}"
+#             echo
+#             echo "- Commit: ${GITHUB_SHA}"
+#             echo "- Repository: ${GITHUB_REPOSITORY}"
+#             echo
+#             if [ -f CHANGELOG.md ] && grep -qF -- "${VERSION}" CHANGELOG.md; then
+#               echo "## Changelog (${VERSION})"
+#               echo
+#               awk -v ver="${VERSION}" '
+#                 /^## / { if (insec) { exit } ; if (index($0, ver) > 0) { insec = 1 } ; if (insec) { print } }
+#                 !/^## / && insec { print }
+#               ' CHANGELOG.md
+#             fi
+#           } > release-notes.md
+#           cat release-notes.md
+
+#       - name: Create GitHub Release
+#         # softprops/action-gh-release v3.0.4
+#         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3
+#         with:
+#           tag_name: ${{ github.ref_name }}
+#           name: meganum ${{ github.ref_name }}
+#           body_path: release-notes.md
+#           generate_release_notes: true
+#           prerelease: ${{ contains(github.ref_name, 'rc') }}
+#           files: dist/*
+#           fail_on_unmatched_files: true

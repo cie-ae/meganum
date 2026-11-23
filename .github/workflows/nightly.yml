@@ -1,0 +1,243 @@
+# # =============================================================================
+# # MegaNum nightly (scheduled)
+# #
+# # Jobs:
+# #   fuzz            — cargo-fuzz, 5 targets x 30 min wall clock each
+# #   soak-props      — proptest soak with PROPTEST_CASES=100000
+# #   sanitizers      — ASAN + TSAN runs of the meganum-core tests (nightly)
+# #   bench-baseline  — criterion `nightly` baseline + artifact upload
+# #   audit           — cargo-audit + cargo-deny
+# #
+# # All `uses:` are pinned to full 40-char commit SHAs (version noted in a
+# # comment directly above each pin).
+# # =============================================================================
+
+# name: Nightly
+
+# on:
+#   schedule:
+#     # Daily at 03:00 UTC.
+#     - cron: "0 3 * * *"
+#   workflow_dispatch:
+
+# permissions:
+#   contents: read
+#   # "artifacts write": the `actions` scope governs the artifact management API
+#   # (retention/deletion); plain artifact uploads work with `contents: read`.
+#   actions: write
+
+# concurrency:
+#   group: nightly-${{ github.ref }}
+#   cancel-in-progress: false
+
+# env:
+#   CARGO_TERM_COLOR: always
+
+# jobs:
+#   fuzz:
+#     name: fuzz (cargo-fuzz)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 150
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Install Rust (nightly + rust-src)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: nightly
+#           components: rust-src
+
+#       - name: Install cargo-fuzz
+#         # taiki-e/install-action v2.90.6
+#         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f
+#         with:
+#           tool: cargo-fuzz
+
+#       # fuzz/ is a standalone cargo-fuzz workspace with its own Cargo.lock.
+#       - name: Rust cache
+#         # Swatinem/rust-cache v2.9.3
+#         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#         with:
+#           workspaces: |
+#             fuzz
+
+#       - name: Restore fuzz corpus (persisted across nightly runs)
+#         # actions/cache v6.1.0
+#         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+#         with:
+#           path: fuzz/corpus
+#           key: fuzz-corpus-${{ github.run_id }}
+#           restore-keys: |
+#             fuzz-corpus-
+
+#       - name: Build fuzz targets
+#         run: cargo fuzz build
+
+#       # Five targets, each capped at 30 min wall clock (-max_total_time=1800).
+#       # They run concurrently, so total wall time is ~30 min + build overhead,
+#       # comfortably inside the 150m job timeout. libFuzzer writes crash
+#       # reproducers to fuzz/artifacts/<target>/ and exits non-zero on a crash;
+#       # `wait` below propagates any non-zero exit to the step.
+#       - name: Fuzz all targets (30 min each)
+#         run: |
+#           pids=()
+#           for t in fuzz_parse fuzz_from_bytes fuzz_div fuzz_sqrt fuzz_ntt; do
+#             echo "starting cargo fuzz run: $t"
+#             cargo fuzz run "$t" -- -max_total_time=1800 -rss_limit_mb=4096 &
+#             pids+=($!)
+#           done
+#           rc=0
+#           for p in "${pids[@]}"; do
+#             wait "$p" || rc=1
+#           done
+#           exit $rc
+
+#       - name: Upload fuzz corpus + crash artifacts (on crash)
+#         if: ${{ failure() }}
+#         # actions/upload-artifact v7.0.2
+#         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#         with:
+#           name: fuzz-artifacts
+#           path: |
+#             fuzz/artifacts/
+#             fuzz/corpus/
+#           retention-days: 14
+#           if-no-files-found: ignore
+
+#   soak-props:
+#     name: soak-props (proptest, 100000 cases)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 240
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Install Rust (stable)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: stable
+
+#       - name: Rust cache
+#         # Swatinem/rust-cache v2.9.3
+#         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#         with:
+#           key: soak
+
+#       - name: cargo test with 100000 proptest cases
+#         env:
+#           PROPTEST_CASES: "100000"
+#         run: cargo test --workspace --all-features
+
+#   sanitizers:
+#     name: sanitizers (ASAN / TSAN, meganum-core)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 120
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Install Rust (nightly + rust-src)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: nightly
+#           components: rust-src
+
+#       - name: Rust cache
+#         # Swatinem/rust-cache v2.9.3
+#         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#         with:
+#           key: sanitizers
+
+#       # ASAN: rebuild std with the sanitizer (-Zbuild-std) so heap activity
+#       # inside std is instrumented as well. Core crate only.
+#       - name: ASAN — cargo test -p meganum-core
+#         env:
+#           RUSTFLAGS: -Zsanitizer=address
+#         run: cargo test -p meganum-core --all-features --target x86_64-unknown-linux-gnu -Zbuild-std
+
+#       # TSAN: meganum-core only. The pyo3 bindings are excluded from TSAN (the
+#       # C-level Python runtime produces unavoidable false positives); the
+#       # bindings are covered by the Python-side stress tests instead (pytest
+#       # suite in CI plus the soak-props job above).
+#       - name: TSAN — cargo test -p meganum-core
+#         env:
+#           RUSTFLAGS: -Zsanitizer=thread
+#         run: cargo test -p meganum-core --all-features --target x86_64-unknown-linux-gnu -Zbuild-std
+
+#   bench-baseline:
+#     name: bench-baseline (criterion nightly)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 90
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Install Rust (stable)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: stable
+
+#       - name: Rust cache
+#         # Swatinem/rust-cache v2.9.3
+#         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+#         with:
+#           key: bench
+
+#       # NOTE on runner classes: stored baselines are only comparable when
+#       # produced on the same runner class. This job and the ci.yml bench-gate
+#       # both pin `ubuntu-latest` for all benchmark runs — keep that invariant
+#       # if runners ever change.
+#       - name: Run criterion benches, save nightly baseline
+#         run: cargo bench -- --save-baseline nightly
+
+#       - name: Upload nightly baseline artifact
+#         # actions/upload-artifact v7.0.2
+#         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#         with:
+#           name: meganum-bench-baseline
+#           path: target/criterion
+#           retention-days: 90
+
+#   audit:
+#     name: audit (cargo-audit / cargo-deny)
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 30
+#     steps:
+#       - name: Check out repository
+#         # actions/checkout v7.0.1
+#         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+#       - name: Install Rust (stable; cargo-deny needs cargo)
+#         # dtolnay/rust-toolchain v1 (master)
+#         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+#         with:
+#           toolchain: stable
+
+#       - name: Install cargo-audit
+#         # taiki-e/install-action v2.90.6
+#         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f
+#         with:
+#           tool: cargo-audit
+
+#       - name: Install cargo-deny
+#         # taiki-e/install-action v2.90.6. cargo-deny is pinned so its config
+#         # schema can never drift under us (0.21.0, 2026-11-16); bump this pin
+#         # together with deny.toml.
+#         uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f
+#         with:
+#           tool: cargo-deny@0.21.0
+
+#       - name: cargo audit (RustSec advisory database)
+#         run: cargo audit
+
+#       - name: cargo deny check (advisories / bans / licenses / sources)
+#         run: cargo deny check advisories bans licenses sources

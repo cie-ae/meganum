@@ -1,0 +1,26 @@
+# MegaNum dispatch tunables (spec 5.4 / 19-C).
+#
+# Every value here is a CALIBRATION TARGET, not a constant: changing any of
+# them requires the M3 calibration report (benchmark evidence per threshold)
+# and an ADR (spec 15). The file is embedded at compile time and parsed by
+# the strict-subset parser in dispatch/tunables.rs (ADR-0004).
+
+[mul]
+schoolbook_max_limbs = 40
+karatsuba_max_limbs = 1024
+toom3_max_limbs = 8192
+ntt_grain = 512          # limbs per parallel NTT butterfly block
+
+[div]
+schoolbook_max_limbs = 48
+bz_min_balanced = 128    # balanced divisions above this use BZ 2n/n
+
+[parallel]
+min_limbs_for_parallel = 4096
+worker_reservation = 1   # cores left for the host
+memory_lean_factor = 4   # downgrade path if peak projection exceeds this multiple
+
+[simd]
+enable_avx2 = true
+enable_avx512 = "auto"   # auto | on | off
+enable_neon = true

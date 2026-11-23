@@ -1,0 +1,152 @@
+# name: CI
+
+# on:
+#   push:
+#     branches: [main, master]
+#   pull_request:
+#   workflow_dispatch:
+
+# permissions:
+#   contents: read
+
+# concurrency:
+#   group: ${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: true
+
+# env:
+#   CARGO_TERM_COLOR: always
+
+# jobs:
+#   # ---------------------------------------------------------------------------
+#   # Formatting (Linux only; rustfmt output is OS-independent).
+#   # ---------------------------------------------------------------------------
+#   fmt:
+#     name: rustfmt
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - run: cargo fmt --all -- --check
+
+#   # ---------------------------------------------------------------------------
+#   # Clippy on every OS. Check-only (no linking): meganum-python is compiled
+#   # WITHOUT pyo3/extension-module here, so nothing attempts to link libpython.
+#   # ---------------------------------------------------------------------------
+#   clippy:
+#     name: clippy (${{ matrix.os }})
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-latest, macos-latest, windows-latest]
+#     runs-on: ${{ matrix.os }}
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: Swatinem/rust-cache@v2
+#       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+#   # ---------------------------------------------------------------------------
+#   # Core engine tests. meganum-core is pure Rust (thiserror + rayon only) and
+#   # links no Python; this is the only cargo test surface.
+#   # ---------------------------------------------------------------------------
+#   test-core:
+#     name: test meganum-core (${{ matrix.os }})
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-latest, macos-latest, windows-latest]
+#     runs-on: ${{ matrix.os }}
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: Swatinem/rust-cache@v2
+#       - name: default features
+#         run: cargo test -p meganum-core --locked
+#       - name: parallel + simd
+#         run: cargo test -p meganum-core --locked --features parallel,simd
+
+#   # ---------------------------------------------------------------------------
+#   # Bench gate: records a criterion baseline for the committed bench suite.
+#   # IMPORTANT: this targets the criterion bench (harness = false), NOT --lib.
+#   # `cargo bench --lib` runs the libtest harness on the lib unittests, which
+#   # rejects criterion flags such as --save-baseline ("Unrecognized option").
+#   # Cross-commit comparison is intentionally deferred until baselines exist
+#   # on main (see SPEC_GAPS.md); the baseline artifact is uploaded for later
+#   # critcmp comparisons.
+#   # ---------------------------------------------------------------------------
+#   bench-gate:
+#     name: bench-gate (criterion baseline)
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: Swatinem/rust-cache@v2
+#       - name: record criterion baseline
+#         run: cargo bench -p meganum-core --locked --bench core_ops -- --save-baseline pr
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: criterion-report
+#           path: target/criterion
+#           if-no-files-found: warn
+
+#   # ---------------------------------------------------------------------------
+#   # Wheel build + Python differential suite. This is the ONLY place the
+#   # bindings crate is linked: maturin enables parallel,simd,extension-module
+#   # (pyproject.toml), so the cdylib does NOT link libpython — on macOS that
+#   # is exactly what avoids the "Undefined symbols for architecture arm64:
+#   # _Py*" failure. Binding behaviour is then verified by pytest against the
+#   # installed wheel on every OS.
+#   # ---------------------------------------------------------------------------
+#   wheel:
+#     name: wheel + pytest (${{ matrix.os }})
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         os: [ubuntu-latest, macos-latest, windows-latest]
+#     runs-on: ${{ matrix.os }}
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: "3.12"
+#       - name: build wheel (maturin)
+#         uses: PyO3/maturin-action@v1
+#         with:
+#           command: build
+#           # --profile dev on purpose: dev-profile wheels keep debug assertions
+#           # live (engine contract bugs surface in the differential suite —
+#           # one did, see CHANGELOG "Newton reciprocal"), and the suite runs
+#           # in ~15 s. Release wheels are built by release.yml (M7).
+#           # (--debug was removed in newer maturin; --profile dev is the
+#           # supported equivalent and exists across maturin >= 1.7.)
+#           args: --out dist --profile dev
+#       - name: install wheel
+#         run: python -m pip install --no-index --find-links dist meganum
+#       - name: pytest (integration + differential vs CPython)
+#         run: |
+#           python -m pip install pytest pytest-timeout
+#           python -m pytest tests -q
+#       - name: API smoke battery
+#         run: python scripts/smoke_api.py
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: wheel-${{ matrix.os }}
+#           path: dist/*.whl
+#           if-no-files-found: error
+
+#   # ---------------------------------------------------------------------------
+#   # Supply-chain gate. cargo-deny is pinned to the exact version deny.toml
+#   # targets (ADR-0007); cargo-audit stays unpinned (fresh RustSec DB each
+#   # run; unmaintained crates surface as warnings only).
+#   # ---------------------------------------------------------------------------
+#   supply-chain:
+#     name: cargo-deny + cargo-audit
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+#       - name: install pinned cargo-deny (paired with deny.toml schema)
+#         uses: taiki-e/install-action@v2
+#         with:
+#           tool: cargo-deny@0.21.0
+#       - run: cargo deny check advisories bans licenses sources
+#       - name: install cargo-audit (unpinned per ADR-0007)
+#         uses: taiki-e/install-action@v2
+#         with:
+#           tool: cargo-audit
+#       - run: cargo audit

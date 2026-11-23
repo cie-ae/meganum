@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "generator": "scripts/gen_vectors.py (CPython cross-checked)",
+  "entries": [],
+  "kat": {
+    "file": "tests/vectors/cpython_kat.tsv",
+    "rows": 21911,
+    "sha256": "0b9ca355b5c33600aa91d7ff4ad29ff6dc930e0d2cc7d58b30962b76e2991d51",
+    "generator": "scripts/gen_vectors.py",
+    "python_checked": true
+  }
+}

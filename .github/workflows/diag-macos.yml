@@ -1,0 +1,118 @@
+# =============================================================================
+# TEMPORARY diagnostic workflow — delete after the aarch64 add investigation.
+#
+# Runs only via manual dispatch (never on push/PR). Produces, on macOS ARM:
+#   1. panic-capture   — full assertion text for every differential failure,
+#                        on the PRE-FIX code (input `debug_ref`), with the
+#                        three non-converging sqrt tests skipped (they do not
+#                        terminate on the broken code).
+#   2. feature matrix  — default / parallel / simd / parallel,simd, one
+#                        summary line per set (isolation evidence).
+#   3. rayon-1-thread  — parallel,simd with RAYON_NUM_THREADS=1 on the pre-fix
+#                        code: failures persisting at 1 thread disprove the
+#                        race hypothesis.
+#   4. release timing  — the three formerly-hanging tests under --release on
+#                        the FIXED code, with per-test wall time.
+#
+# `debug_ref` must be a commit IN the current history whose aarch64 add
+# kernel is still broken (v5: ad53ab1a96067e58b4211f807516f74ab13158d6).
+# Those two jobs fetch FULL history (`fetch-depth: 0`) and then check out the
+# SHA locally: GitHub's upload-pack rejects shallow fetches of non-tip SHAs
+# ("upload-pack: not our ref"), which is exactly how the first dispatch died.
+# =============================================================================
+
+name: diag-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug_ref:
+        description: "SHA with the BROKEN aarch64 add (empty: skip jobs 1+3)"
+        required: false
+        default: ad53ab1a96067e58b4211f807516f74ab13158d6
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # (a) Full panic text per failed test, on the broken ref. The three
+  # non-converging sqrt tests are skipped (they loop forever on the broken
+  # code); job 4 establishes their behaviour under --release on the fix.
+  panic-capture:
+    if: ${{ inputs.debug_ref != '' }}
+    name: panic capture (pre-fix, --nocapture)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: check out the broken ref
+        run: git checkout --force "${{ inputs.debug_ref }}"
+      - name: full test suite, broken code, panics captured
+        continue-on-error: true
+        run: |
+          cargo test -p meganum-core --locked --features parallel,simd -- \
+            --nocapture \
+            --skip floor_property_random \
+            --skip large_value_exactness \
+            --skip isqrt_matches_ref_binary_search
+
+  # (b) Feature-isolation matrix on the FIXED code (all four sets must pass).
+  feature-matrix:
+    name: feature matrix
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", "parallel", "simd", "parallel,simd"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test -p meganum-core --locked ${{ matrix.features != '' && format('--features {0}', matrix.features) || '' }}
+        continue-on-error: true
+
+  # (c) Rayon determinism probe on the BROKEN code: failures persisting with
+  # RAYON_NUM_THREADS=1 rule out a race / non-associative reduction.
+  rayon-one-thread:
+    if: ${{ inputs.debug_ref != '' }}
+    name: rayon=1 (pre-fix, parallel,simd)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: check out the broken ref
+        run: git checkout --force "${{ inputs.debug_ref }}"
+      - name: broken code at one rayon thread, panics captured
+        continue-on-error: true
+        env:
+          RAYON_NUM_THREADS: "1"
+        run: |
+          cargo test -p meganum-core --locked --features parallel,simd -- \
+            --nocapture \
+            --skip floor_property_random \
+            --skip large_value_exactness \
+            --skip isqrt_matches_ref_binary_search
+
+  # (d) Wall time of the three formerly-hanging tests under --release on the
+  # FIXED code. On the broken code these do not terminate (the broken add
+  # feeds the sqrt floor-correction loops); flipping checkout to debug_ref
+  # and lowering timeout-minutes would demonstrate it.
+  release-timing:
+    name: release timing (fixed)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: time the three heavy sqrt/isqrt tests (--release)
+        run: |
+          for t in isqrt_matches_ref_binary_search sqrt::tests::floor_property_random sqrt::tests::large_value_exactness; do
+            echo "=== $t ==="
+            /usr/bin/time -p cargo test -p meganum-core --locked --release --features parallel,simd "$t" -- --exact --nocapture 2>&1 | tail -8
+          done

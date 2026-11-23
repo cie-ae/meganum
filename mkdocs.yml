@@ -1,0 +1,54 @@
+site_name: MegaNum
+site_description: Fast, exact, portable arbitrary-precision integers and floats for Python, powered by a pure-Rust engine.
+site_url: https://meganum.github.io/meganum
+repo_url: https://github.com/meganum/meganum
+repo_name: meganum/meganum
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+# Pages that describe the public Python surface mirror python/meganum/, so the
+# preview server rebuilds when the package sources change.
+watch:
+  - python/meganum
+
+# API reference pages are handwritten summaries for v1.0 that point at the
+# package docstrings and python/meganum/__init__.pyi. mkdocstrings is
+# intentionally not enabled in this configuration.
+nav:
+  - Home: index.md
+  - User Guide: user-guide.md
+  - MegaInt API: api-megaint.md
+  - MegaFloat API: api-megafloat.md
+  - Algorithms: algorithms.md
+  - Dispatcher: dispatcher.md
+  - Benchmarks: benchmarks.md
+  - Contributing: contributing.md
+  - ADRs: adr/README.md
+  - Security: security.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - toc:
+      permalink: true
